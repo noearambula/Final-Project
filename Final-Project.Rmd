@@ -1,0 +1,38 @@
+---
+title: "Final Project"
+author: "Noe Arambula"
+date: '2022-04-22'
+output:
+  pdf_document:
+    toc: true
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+# Introduction
+
+I will be constructing a model that predicts the price of an Airbnb depending on several variables that will be explained further in the following section. Since predicting price gives a continuous outcome I will be fitting and using my data on models best suited for regression. I will start by explaining a little bit about what Airbnb is and what they do and then go on to explaining why this model may be useful. Once we have a good idea about the kind of data we may be using I will load in my data set and begin data cleaning/splitting. Next, I will move on to exploratory data analysis to get a better understanding of the specific data we will be working with. Following this I will begin my model construction process and lastly, I will test my final model on testing data which will not be used throughout the model construction process.
+
+## What is Airbnb?
+
+## Why Might this Model be Useful?
+
+## Loading Packages and Data set
+
+```{r Loading Data, message=FALSE}
+library(discrim)
+library(ggplot2)
+library(tidyverse)
+library(tidymodels)
+library(corrplot)
+library(ggthemes)
+tidymodels_prefer()
+library(readr)
+library(corrr)
+library(klaR)
+library(MASS)
+```
+
+# Data Cleaning
