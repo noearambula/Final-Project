@@ -3,12 +3,12 @@ title: "Final Project"
 author: "Noe Arambula"
 date: '2022-04-22'
 output:
-  pdf_document:
-    toc: true
   html_document:
     toc: true
     toc_float: true
     code_folding: hide
+  pdf_document:
+    toc: true
 ---
 
 # Introduction
@@ -17,22 +17,250 @@ I will be constructing a model that predicts the price of an Airbnb depending on
 
 ## What is Airbnb?
 
+[Airbnb](https://www.airbnb.com/) in a company that is operated completely online to allow travelers to book accommodations anywhere in the world. Anyone can make an account online in order to either post a listing or a "stay" that people can rent or to sign up and book different accommodations. You can think of airbnb as a kind of platform or marketplace where people go to post an offer for or rent an accommodation.
+
+Airbnb is mainly focused on home-stays, so many people rent their home or part of their home to travelers that need a place to stay. You simply go online type the dates of your vacation/stay, the location, and the amount of people that will be with you similar to booking a hotel. Then many different listings will pop up with different prices depending on the type of accommodation, location and other similar factors. You can also book through your phone as they have a mobile app.
+
 ## Why Might this Model be Useful?
+
+This model could help hosts that want to post a new accommodation decide how much they want to list their place for. Given a certain amount of information about the price this model will tell them about how much other similar places are renting for on average.
 
 ## Loading Packages and Data set
 
 ```{r Loading Data, message=FALSE}
+library(yardstick)
+library(ISLR)
+library(rpart.plot)
+library(vip)
+library(janitor)
+library(randomForest)
+library(xgboost)
+library(ranger)
 library(discrim)
 library(ggplot2)
 library(tidyverse)
 library(tidymodels)
+library(corrr)
 library(corrplot)
 library(ggthemes)
-tidymodels_prefer()
 library(readr)
 library(corrr)
 library(klaR)
 library(MASS)
+library(dplyr)
+
+tidymodels_prefer()
+set.seed(777)
+```
+
+I intend to use a data set from insideairbnb.com which sources the data from publicly available information on the official Airbnb site. The data-set includes information about the hosts of the living space being offered, the living space/listing itself, and reviews. The data set I will use will be strictly from the Los Angeles area.
+There are 33,330 observations and 74 predictors however I edited the .csv and took out some predictors as many were not necessary such as some urls to listings and description of the host/listings. The dataset has both numeric and character/string data variables as well categorical and continuous variables. Most of the data is continuous and I will be able to change the data I need into continuous variables in the Data Cleaning section
+
+*Note: I have a code book with descriptions of all variables used in my github*
+
+I converted the dates to a standard format and converted bathrooms_text to numeric which just changed for example 1 bath to 1 (dropping bath for all columns)
+
+```{r warning=FALSE}
+airbnb <- read_csv("airbnb_listings_final.csv", 
+    col_types = cols(host_since = col_date(format = "%m/%d/%Y"),
+                     first_review = col_date(format = "%m/%d/%Y"), 
+                     last_review = col_date(format = "%m/%d/%Y"),
+                     bathrooms_text = col_number()))
 ```
 
 # Data Cleaning
+
+The data set I am using already has standardized names for all variables so there is no need to use janitor to clean them up but there were still some things to clean up. After removing many variables and loading in the data set I realized there was still a few things I should take out since they are not very relevant to predicting price, after this I have a total of 31 predictors
+
+```{r}
+airbnb <- airbnb %>% 
+  select(-amenities, -host_name, -neighbourhood_cleansed)
+```
+
+Convert Dates to Numeric this is so I can see if date a host joined and the dates of their reviews affects how they price their listing. I can I am able to now use these in the EDA and model building below
+
+```{r}
+airbnb$first_review <- as.numeric(airbnb$first_review)
+  
+airbnb$last_review <- as.numeric(airbnb$last_review)
+
+airbnb$host_since <- as.numeric(airbnb$host_since)
+```
+
+Converting True/False Values to 0 and 1 (0 for false and 1 for true). Again this allows me to use these predictors in my continuous/linear regression analysis and models below
+
+```{r}
+airbnb$host_is_superhost <- as.numeric(airbnb$host_is_superhost)
+
+airbnb$host_has_profile_pic <- as.numeric(airbnb$host_has_profile_pic)
+
+airbnb$host_identity_verified <- as.numeric(airbnb$host_identity_verified)
+
+airbnb$instant_bookable <- as.numeric(airbnb$instant_bookable)
+```
+
+I will change property type to 1 or 2 depending on if it is an entire home(1) or just a room being(2) rented so I can see how price affects each type of accommodation
+
+```{r warning=FALSE}
+airbnb$property_type [airbnb$property_type == 'Entire home/apt'] <- 1
+airbnb$property_type [airbnb$property_type == 'Private room'] <- 2
+
+airbnb$property_type <- as.integer(airbnb$property_type)
+```
+
+Lastly I will convert host_response_time to 1 2 3 or 4 depending on how fast they respond 1 being the fastest and 4 being the highest( from 'within an hour', 'within a few hours'. 'within an day', and 'a few days or more' respectively) I am leaving all of these variables in to see if the hosts engagement with the app effects the price they set in any way.
+
+```{r warning=FALSE}
+airbnb$host_response_time [airbnb$host_response_time == 'within an hour'] <- 1
+airbnb$host_response_time [airbnb$host_response_time == 'within a few hours'] <- 2
+airbnb$host_response_time [airbnb$host_response_time == 'within an day'] <- 3
+airbnb$host_response_time [airbnb$host_response_time == 'a few days or more'] <- 4
+
+airbnb$host_response_time <- as.integer(airbnb$host_response_time)
+```
+
+*note: the point of converting all to numeric types was so I can include them in my EDA otherwise I would convert to dummy variables in my recipe's*
+
+I now want to check to see that all my data looks good and ready to go
+
+```{r}
+head(airbnb)
+```
+
+*Note: I will be dealing with missing values my imputing in my recipe's later*
+
+## Data Splitting
+
+I will use the 80-20 split for my training and testing data respectively. I stratified my data on the number of guests that can be accommodated in each listing as I feel that will be the biggest factor in predicting price and I can split each equally
+
+```{r}
+set.seed(777)
+airbnb_split <- initial_split(airbnb, prop = 0.8, strata = accommodates)
+
+airbnb_train <- training(airbnb_split)
+airbnb_test <- testing(airbnb_split)
+```
+
+The training data set has 26662 observation and the testing set has 6667 observations for a total of 33329 observations
+
+# Exploratory Data Analysis (EDA)
+
+I will be using the training set for this section where each observation is a different listing.
+
+I am going to start off by looking at boxplots of a few different variables that I am most worried about affecting the data set
+
+```{r}
+airbnb_train %>% 
+  ggplot(aes(x = accommodates)) +
+  geom_boxplot()
+
+airbnb_train %>% 
+  ggplot(aes(x = price, y = property_type)) +
+  geom_boxplot()
+
+airbnb_train %>% 
+  ggplot(aes(x = bedrooms)) +
+  geom_boxplot()
+```
+
+From Looking at these two boxplots it seems as though we have some heavy outliers for price and a few for the amount of people being accommodated and sure enough once I went back to look at the data and organized it by price and accommodates I saw that there are a few listings that are up to 25000\$!
+
+The vast majority of listings however, are under 500\$ and so I will be filtering out these observations from my training and testing sets now in order to continue my EDA and get a true sense of what my data looks like. Filtering out price coincidentally filters out the outliers for other predictors as well such as accommodates, and the number of bedrooms.
+
+```{r}
+ airbnb_train <- airbnb_train %>%
+   filter(price < 500)
+ 
+airbnb_test <- airbnb_test %>%
+  filter(price < 500)
+
+airbnb_train <- airbnb_train %>%
+  filter(accommodates < 11)
+
+airbnb_test <- airbnb_test %>%
+  filter(accommodates < 11)
+
+dim(airbnb_train)
+dim(airbnb_test)
+```
+
+airbnb_train now has 24270 observations loss of about 2200 observations and the testing set has 6059 observations a loss of about 550 observations so they both still represent about 80% and 20% of our remaining data set of 30329 total observations\
+
+```{r}
+airbnb_train %>% 
+  ggplot(aes(x= price)) +
+  geom_boxplot()
+```
+
+This looks much better than before and we can also take a look at a histogram of both price and accommodates
+
+```{r}
+
+airbnb_train %>% 
+  ggplot(aes(reorder(accommodates,price),price)) +
+  geom_boxplot() +
+  coord_flip() +
+  labs(
+    title = "Price by Number of People Accommodated",
+    x = "Max Number of People That Can be Accomodated"
+  )
+
+airbnb_train %>% 
+  ggplot(aes(reorder(property_type,price),price)) +
+  geom_boxplot() +
+  coord_flip() +
+  labs(
+    title = "Price by Property Type",
+    x = "Property Type 1 = entire unit/house, 2 = room only"
+  )
+```
+
+Here we see a strong correlation between price and number of people that can be accommodated. We can see that even though there are airbnbs where the number of people allowed to stay is low the price can go very high if you would like to rent a more luxurious accommodation. Airbnb has many different types of accommodations even though it splits accommodation type into either an entire house/apt or just a bedroom the accommodations can be anything from a regular suburban house Inglewood or glass dome in the middle of the Mojave desert!
+
+We must also take note that there are a significant amount of missing data for property type. Which makes me think that maybe I should not use it as clearly a whole accommodation should have a higher price than just renting a room.
+
+Before moving forward I also would like to say that the price is based on a per night basis. The data was collected straight from the airbnb website and each observation was collected on the same day. At the end of each stay the guest rates the accommodation based on several things such as overall experience, cleanliness and value all of which have been included in the data set as observations. Below is a photo of the airbnb app so you can get a sense of how it works.
+
+![](images/IMG_7330.PNG){width="454"}
+
+```{r}
+airbnb_train %>% 
+  ggplot(aes(x = price)) +
+  geom_histogram()
+
+airbnb_train %>% 
+  ggplot(aes(x = accommodates)) +
+  geom_histogram()
+
+```
+
+We can see that the median price lies at around 100 and median number of people that a listing can accommodate is about two and that we have a leftward skew for both variables
+
+Now lets take a look at a correlation matrix between a few of the predictors
+
+```{r}
+airbnb_train %>% 
+  select(host_since,host_response_time,host_is_superhost,accommodates,
+         price, number_of_reviews, review_scores_rating, property_type) %>% 
+  cor(use = "complete.obs") %>% 
+  corrplot(type = "lower", diag = FALSE)
+```
+
+Here we see again the relationship between price and accommodates variables, interestingly there is a negative correlation between number of reviews and the length of time since a host has joined which makes sense as those who have joined recently will not have as many people that have stayed in their accommodation. A super host is someone who consistently is supposed to go above and beyond to meet guests needs and be very engaged with them which makes sense why we would see a correlation between super host and review rating.
+
+# Model Building
+
+Now for my model building I will be trying out the following models on my data:
+
+1.  Linear Regression Model
+2.  Random Forest Model
+3.  Ridge Regression Model
+4.  Boosted Tree Model
+
+I will organize my code into three categories Model Building, running/testing the models, and model analysis
+
+# Model Building
+
+# Running The Models
+
+# Model Analysis
