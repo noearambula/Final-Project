@@ -17,7 +17,7 @@ I will be constructing a model that predicts the price of an Airbnb depending on
 
 ## What is Airbnb?
 
-[Airbnb](https://www.airbnb.com/) in a company that is operated completely online to allow travelers to book accommodations anywhere in the world. Anyone can make an account online in order to either post a listing or a "stay" that people can rent or to sign up and book different accommodations. You can think of airbnb as a kind of platform or marketplace where people go to post an offer for or rent an accommodation.
+[Airbnb](https://www.airbnb.com/) in a company that is operated completely online to allow travelers to book accommodations anywhere in the world. Anyone can make an account online in order to either post a listing or a "stay" that people can rent or to sign up and book different accommodations, once you request to stay somewhere the host must approve your stay. You can think of airbnb as a kind of platform or marketplace where people go to post an offer for or rent an accommodation.
 
 Airbnb is mainly focused on home-stays, so many people rent their home or part of their home to travelers that need a place to stay. You simply go online type the dates of your vacation/stay, the location, and the amount of people that will be with you similar to booking a hotel. Then many different listings will pop up with different prices depending on the type of accommodation, location and other similar factors. You can also book through your phone as they have a mobile app.
 
@@ -30,6 +30,7 @@ This model could help hosts that want to post a new accommodation decide how muc
 ```{r Loading Data, message=FALSE}
 library(yardstick)
 library(ISLR)
+library(ISLR2)
 library(rpart.plot)
 library(vip)
 library(janitor)
@@ -48,13 +49,13 @@ library(corrr)
 library(klaR)
 library(MASS)
 library(dplyr)
+library(glmnet)
 
 tidymodels_prefer()
 set.seed(777)
 ```
 
-I intend to use a data set from insideairbnb.com which sources the data from publicly available information on the official Airbnb site. The data-set includes information about the hosts of the living space being offered, the living space/listing itself, and reviews. The data set I will use will be strictly from the Los Angeles area.
-There are 33,330 observations and 74 predictors however I edited the .csv and took out some predictors as many were not necessary such as some urls to listings and description of the host/listings. The dataset has both numeric and character/string data variables as well categorical and continuous variables. Most of the data is continuous and I will be able to change the data I need into continuous variables in the Data Cleaning section
+I intend to use a data set from insideairbnb.com which sources the data from publicly available information on the official Airbnb site. The data-set includes information about the hosts of the living space being offered, the living space/listing itself, and reviews. The data set I will use will be strictly from the Los Angeles area. There are 33,330 observations and 74 predictors however I edited the .csv and took out some predictors as many were not necessary such as some urls to listings and description of the host/listings. The dataset has both numeric and character/string data variables as well categorical and continuous variables. Most of the data is continuous and I will be able to change the data I need into continuous variables in the Data Cleaning section
 
 *Note: I have a code book with descriptions of all variables used in my github*
 
@@ -257,10 +258,250 @@ Now for my model building I will be trying out the following models on my data:
 3.  Ridge Regression Model
 4.  Boosted Tree Model
 
-I will organize my code into three categories Model Building, running/testing the models, and model analysis
+I will organize my code into three categories Building The Model, running/testing the models, and model analysis
 
-# Model Building
+## Building Recipe/folds and Final Data
 
-# Running The Models
+From the EDA I saw that their was a significant amount of missing values so I decided to look back through observations more carefully and saw there was a lot of missing data for all the review scores observations and have decided to filter out all observations with NA as I should still have more than enough to construct a model.
 
-# Model Analysis
+```{r}
+final_train <- airbnb_train %>% drop_na()
+final_test <- airbnb_test %>% drop_na()
+
+dim(final_train)
+dim(final_test)
+```
+
+I assigned this data to a new set, This left us with 9354 obs. for the training set down from 24270 obs. leaving us with the an 80 20 split still and 2397 observations in the testing set down from 6059 obs.
+
+I can now start the model building process but I double checked the price count just to double check the distribution stayed the same
+
+```{r}
+airbnb_train %>% 
+ ggplot(aes(x = price)) +
+ geom_histogram()
+```
+
+## Building/Running The Models
+
+### Linear Regression
+
+I will first setup **linear regression model** starting with a recipe:
+
+```{r}
+airbnb_recipe <- recipe(price ~ . , data = final_train) %>% # predict price with all predictors
+  step_normalize(all_predictors()) # this centers and scales all variables
+
+```
+
+I do not believe there was a strong enough correlation between any of the predictors that warranted creating an interaction term and I converted all T/F and categorical predictors into numerical categories in data cleaning so there is no need for any dummy coding
+
+I now create a linear regression object and workflow :
+
+```{r}
+lm_model <- linear_reg() %>% 
+  set_engine("lm")
+
+lm_wf <- workflow() %>% 
+  add_recipe(airbnb_recipe) %>% 
+  add_model(lm_model)
+```
+
+I now fit my model:
+
+```{r}
+airbnb_fit <- fit(lm_wf, final_train)
+```
+
+### Random Forest Model
+
+I will now set up a random forest model and workflow:
+
+```{r}
+set.seed(777)
+rf_mod <- rand_forest(mtry = tune(), trees = tune(), min_n = tune()) %>%
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("regression")
+
+rf_wf <- workflow() %>%
+  add_recipe(airbnb_recipe) %>%
+  add_model(rf_mod)
+```
+
+Mtry is the number of predictors that will be randomly chosen at each split of the tree models thus it cannot be lower than 1 since then no predictors would be chosen or greater than 31 since we have 31 predictors. If mtry = 31 that would represent a bagging model.
+
+Trees represents the number of trees that will be used in each model
+
+min_n represents the minimum number of of data points needed at each node/tree end that is needed in order to split it further into another tree
+
+I will now setup a grid for each hyperparameter we are tuning and fold the data for cross validation:
+
+```{r}
+param_grid <- grid_regular(mtry(range = c(6,28)), 
+                     trees(range = c(2, 5)), 
+                     min_n(), levels = c(10,10,10))
+
+# Fold
+airbnb_fold <- vfold_cv(final_train, v = 5, repeats = 5, strata = price)
+
+```
+
+Now lets fit the tuned model:
+
+```{r eval=FALSE}
+set.seed(777)
+tune_res_rf <- tune_grid(
+  rf_wf, 
+  resamples = airbnb_fold, 
+  grid = param_grid,
+)
+```
+
+*Note: I ran and saved this model outside of the rmd in the save models r file and will just load the model in during analysis since this took about 15-20min to run*
+
+### Boosted Tree Model
+
+First we Set up the Boosted Tree Model and workflow:
+
+```{r}
+boost_spec <- boost_tree(trees = tune(), tree_depth = tune()) %>%
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+boost_wf <- workflow() %>% 
+  add_recipe(airbnb_recipe) %>% 
+  add_model(boost_spec)
+```
+
+Tuning trees lets us try models different number trees and tuning tree depth is a parameter that controls the number of splits of each tree
+
+Next we set up the grid for trees and tree_depth:
+
+```{r}
+boost_grid <- grid_regular(trees(range = c(50, 350)), 
+                     tree_depth(), levels = c(4,8))
+```
+
+Now Fit the tuned model:
+
+```{r eval=FALSE}
+set.seed(777)
+tune_res_boost <- tune_grid(
+  boost_wf,
+  resamples = airbnb_fold, 
+  grid = boost_grid
+)
+```
+
+*Note: I ran and saved this model outside of the rmd in the save models r file and will just load the model in during analysis since this took about 15min to run*
+
+## Model Analysis
+
+I will first load in the models from my .rda file:
+
+```{r}
+load(file = "tunedmodels.rda")
+```
+
+### Linear Regression Model
+
+I will predict price using my data and see how it fairs against the actual training data
+
+```{r}
+multi_metric <- metric_set(rmse, rsq, mae)
+
+airbnb_predict <- predict(airbnb_fit, final_train) %>% 
+  bind_cols(final_train %>% select(price))
+
+multi_metric(airbnb_predict, truth = price, estimate = .pred)
+```
+
+Looking at the rmse and R\^2 values we see that the model is not great at predicting the price. With an R\^2 value just above .5 this means that the model only explains about 50% of the variance in the response variable around the mean. So, about half of the values are not predicted well. The rmse of 70 is not good either since most listing are around the 200\$ price point.
+
+### Random Forest Model
+
+First Lets look at some performance metrics:
+
+```{r}
+collect_metrics(tune_res_rf, metric = ) %>%   
+  arrange(mean)
+```
+
+We can select the best from these now:
+
+```{r}
+show_best(tune_res_rf, metric = "rsq")
+show_best(tune_res_rf, metric = "rmse")
+```
+
+The best rmse value is 65.24286 and the best rsq value is 0.5969
+
+We can also look at a graph of the performance:
+
+```{r}
+autoplot(tune_res_rf)
+```
+
+From this graph it is clear that the more trees were used the better the rsq and rmse values got which is expected. However, the rsq value is still not great meaning we should use more trees in our model. The model also performed best using about 15 predictors
+
+### Boosted Tree Model
+
+First Lets look at some performance metrics
+
+```{r}
+collect_metrics(tune_res_boost) %>%   
+  arrange(mean)
+
+```
+
+Lets select the best models from these:
+
+```{r}
+show_best(tune_res_boost, metric = "rsq")
+show_best(tune_res_boost, metric = "rmse")
+```
+
+Looking at this the best rsq value for the boosted tree model was 0.6561402 and the best rmse value was 60.23864 this is very close to the random forest model but a bit better so I would choose this model as my final model.
+
+Lets look at a plot fo the tuned parameters:
+
+```{r}
+autoplot(tune_res_boost)
+```
+
+Here we can see that the best tree depth value would be 4 which gives us a spike in the rsq and decline in the rmse. The number of trees here did not affect the data as much as I thought it would they are all similar however 50 trees performs the best.
+
+# Final Model and Analysis
+
+I will now construct the final model using the best model from the boosted tree tuned models:
+
+```{r}
+best_boosted <- select_best(tune_res_boost, metric = 'rsq')
+final_wf <- finalize_workflow(boost_wf, best_boosted)
+
+final_fit <- fit(final_wf, final_train)
+```
+
+We can now see how well our final model did vs the testing set:
+
+```{r}
+airbnb_metric <- metric_set(rsq)
+
+model_test_predictions <- predict(final_fit, new_data = final_test) %>% 
+  bind_cols(final_test %>% select(price)) 
+
+
+model_test_predictions %>% 
+  airbnb_metric(truth = price, estimate = .pred)
+
+augment(final_fit, new_data = final_test) %>%
+  rmse(truth = price, estimate = .pred)
+```
+
+We get an rsq of 0.64 which is similar to the one we got using the training set of 0.6561402 and an rmse of 58 which is also close but a little better to the previews rmse of 60.23864
+
+# Conclusion
+
+Overall, our model were not the best at predicting price however the boosted tree model was the best and when transferred over to the testing data it performed relatively the same as it did with the training set. While more trees usually means overfitting the amount of trees the model performed best at was at 50 trees rather than anything higher as I had tuned up to 350 trees for this model. This model may have performed a bit better than the others as predicting price with so many predictors would most likely be too complicated for a regular lm model.
+
+If I were to go back I would try tuning other various amounts of trees for the random forest model or try a different model altogether like maybe ridge regression. Overall this was a great way to test out different models on real world data and navigate all the errors and problems that come with working with real life data. While our models were not the best at predicting price for Airbnb's I feel as though I learned a lot about the data and how I could improve upon this project in the future.
